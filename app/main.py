@@ -1,147 +1,104 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field, validator
-from typing import List, Optional
-from datetime import datetime
+from fastapi import FastAPI, Depends, HTTPException
+from sqlalchemy.orm import Session
+from sqlalchemy import select
+
+from .database import SessionLocal, engine
+from . import models, schemas
 
 app = FastAPI(
-    title="Product API",
-    description="API für Produktverwaltung (Starter-Version)",
-    version="0.1.0"
+    title="Product API mit Dependency Injection",
+    description="API für Produktverwaltung mit FastAPI, SQLAlchemy und SQLite",
+    version="2.0.0"
 )
 
-# In-Memory Database (nur für Demo, geht beim Neustart verloren)
-products_db = []
+# Tabellen anlegen
+models.Base.metadata.create_all(bind=engine)
 
 
-# ---------- Pydantic Models ----------
+# ---------- Dependency ----------
 
-class ProductBase(BaseModel):
-    name: str = Field(..., min_length=1, max_length=200)
-    description: Optional[str] = Field(None, max_length=1000)
-    price: float = Field(..., gt=0)
-    category: str
-
-    @validator("price")
-    def price_must_be_positive(cls, v: float) -> float:
-        if v <= 0:
-            raise ValueError("Preis muss positiv sein")
-        return v
-
-
-class ProductCreate(ProductBase):
-    """Input-Modell für Produkt-Erstellung"""
-    pass
-
-
-class ProductUpdate(BaseModel):
-    """Input-Modell für Produkt-Update (alle Felder optional)"""
-    name: Optional[str] = Field(None, max_length=200)
-    description: Optional[str] = None
-    price: Optional[float] = Field(None, gt=0)
-    category: Optional[str] = None
-
-
-class ProductResponse(ProductBase):
-    """Output-Modell für API-Responses"""
-    id: int
-    created_at: datetime
-    updated_at: datetime
-
-    class Config:
-        orm_mode = True
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 # ---------- Endpoints ----------
 
 @app.get("/health")
-async def health_check():
+def health_check():
     return {"status": "ok"}
 
 
-@app.post("/products/", response_model=ProductResponse, status_code=201)
-async def create_product(product: ProductCreate):
-    """
-    Erstellt ein neues Produkt.
-
-    - **name**: Produktname (required)
-    - **description**: Produktbeschreibung (optional)
-    - **price**: Preis in Euro (required, > 0)
-    - **category**: Kategorie (required)
-    """
-    product_dict = product.dict()
-    now = datetime.now()
-
-    product_dict["id"] = len(products_db) + 1
-    product_dict["created_at"] = now
-    product_dict["updated_at"] = now
-
-    products_db.append(product_dict)
-    return product_dict
-
-
-@app.get("/products/", response_model=List[ProductResponse])
-async def get_products(
-    skip: int = 0,
-    limit: int = 10,
-    category: Optional[str] = None
+@app.post("/products", response_model=schemas.ProductRead, status_code=201)
+def create_product(
+    product_in: schemas.ProductCreate,
+    db: Session = Depends(get_db)
 ):
     """
-    Gibt eine Liste von Produkten zurück.
-
-    - **skip**: Anzahl zu überspringender Einträge (Pagination)
-    - **limit**: maximale Anzahl von Einträgen
-    - **category**: optionaler Filter nach Kategorie
+    Erstellt ein neues Produkt.
     """
-    filtered_products = products_db
-
-    if category is not None:
-        filtered_products = [p for p in products_db if p["category"] == category]
-
-    return filtered_products[skip:skip + limit]
-
-
-@app.get("/products/{product_id}", response_model=ProductResponse)
-async def get_product(product_id: int):
-    """
-    Gibt ein spezifisches Produkt zurück.
-    """
-    product = next((p for p in products_db if p["id"] == product_id), None)
-
-    if product is None:
-        raise HTTPException(status_code=404, detail="Produkt nicht gefunden")
-
+    product = models.Product(**product_in.dict())
+    db.add(product)
+    db.commit()
+    db.refresh(product)
     return product
 
 
-@app.put("/products/{product_id}", response_model=ProductResponse)
-async def update_product(product_id: int, product_update: ProductUpdate):
+@app.get("/products", response_model=list[schemas.ProductRead])
+def read_products(db: Session = Depends(get_db)):
+    """
+    Gibt alle Produkte zurück.
+    """
+    products = db.execute(select(models.Product)).scalars().all()
+    return products
+
+
+@app.get("/products/{product_id}", response_model=schemas.ProductRead)
+def read_product(product_id: int, db: Session = Depends(get_db)):
+    """
+    Gibt ein einzelnes Produkt zurück.
+    """
+    product = db.get(models.Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
+
+
+@app.put("/products/{product_id}", response_model=schemas.ProductRead)
+def update_product(
+    product_id: int,
+    product_update: schemas.ProductUpdate,
+    db: Session = Depends(get_db)
+):
     """
     Aktualisiert ein bestehendes Produkt.
     """
-    product = next((p for p in products_db if p["id"] == product_id), None)
-
-    if product is None:
-        raise HTTPException(status_code=404, detail="Produkt nicht gefunden")
+    product = db.get(models.Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
 
     update_data = product_update.dict(exclude_unset=True)
 
-    for key, value in update_data.items():
-        product[key] = value
+    for field, value in update_data.items():
+        setattr(product, field, value)
 
-    product["updated_at"] = datetime.now()
-
+    db.commit()
+    db.refresh(product)
     return product
 
 
 @app.delete("/products/{product_id}", status_code=204)
-async def delete_product(product_id: int):
+def delete_product(product_id: int, db: Session = Depends(get_db)):
     """
     Löscht ein Produkt.
     """
-    product = next((p for p in products_db if p["id"] == product_id), None)
+    product = db.get(models.Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="Product not found")
 
-    if product is None:
-        raise HTTPException(status_code=404, detail="Produkt nicht gefunden")
-
-    products_db.remove(product)
+    db.delete(product)
+    db.commit()
     return None
