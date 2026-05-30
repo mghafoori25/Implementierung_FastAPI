@@ -11,7 +11,8 @@ st.title("Mini-Dashboard: Technik-Verkäufe")
 
 @st.cache_data
 def lade_daten():
-    return pd.read_csv("technik_verkaeufe.csv")
+    dateipfad = Path(__file__).parent / "technik_verkaeufe.csv"
+    return pd.read_csv(dateipfad)
 
 df = lade_daten()
 
