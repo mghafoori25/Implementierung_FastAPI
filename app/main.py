@@ -1,21 +1,28 @@
 from datetime import datetime, timedelta, timezone
 from typing import Annotated
-
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
 from .database import SessionLocal, engine
 from . import models, schemas
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(
     title="Product API mit Dependency Injection und JWT",
     description="API für Produktverwaltung mit FastAPI, SQLAlchemy, SQLite und Auth",
     version="3.0.0"
 )
+
+# app.add_middleware(
+  #  CORSMiddleware,
+   # allow_origins=["http://localhost:5173"],
+    #allow_credentials=True,
+    #allow_methods=["*"],
+    #allow_headers=["*"],
+#)
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -62,6 +69,25 @@ def authenticate_user(username: str, password: str):
     if not verify_password(password, user.hashed_password):
         return None
     return user
+
+@app.post("/users/", response_model=schemas.User, status_code=201)
+def register_user(user: schemas.UserCreate):
+    if user.username in fake_users_db:
+        raise HTTPException(
+            status_code=400,
+            detail="Benutzer existiert bereits"
+        )
+
+    hashed_password = pwd_context.hash(user.password)
+
+    fake_users_db[user.username] = {
+        "username": user.username,
+        "hashed_password": hashed_password
+    }
+
+    return {
+        "username": user.username
+    }
 
 
 def create_access_token(data: dict, expires_delta: timedelta | None = None):
@@ -197,3 +223,29 @@ def delete_product(
     db.delete(product)
     db.commit()
     return None
+
+@app.get("/api/products")
+def read_api_products():
+    return [
+        {
+            "id": 1,
+            "name": "Laptop",
+            "preis": 1499.00,
+            "kategorie": "Elektronik",
+            "istVerfuegbar": True
+        },
+        {
+            "id": 2,
+            "name": "Maus",
+            "preis": 29.99,
+            "kategorie": "Zubehör",
+            "istVerfuegbar": True
+        },
+        {
+            "id": 3,
+            "name": "Tastatur",
+            "preis": 89.90,
+            "kategorie": "Zubehör",
+            "istVerfuegbar": False
+        }
+    ]
